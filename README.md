@@ -5,14 +5,18 @@ CUDA kernel 优化与 GPU 推理能力建设，面向 AI Infra / 端侧推理方
 ## 项目结构
 
 ```
-├── gem/         # GEM kernel 分阶段优化 (V1-V6)
+├── gemm/         # GEMM kernel 分阶段优化 (V1-V6)
 │   ├── src/
-│   ├── notes.md          # 知识点整理
+│   ├── notes.md
 │  └── README.md
+├── quant/        # INT8/INT4 Weight-Only 量化 GEM
+│   ├── src/
+│   ├── notes.md
+│   └── README.md
 └── ...
 ```
 
-## 一、GEMM Kernel 优化
+## 一、GEMM Kernel 优化 (gemm/)
 
 目标：从 naive 实现逐步优化至接近 cuBLAS 性能，掌握 GPU 微架构与 kernel 调优方法。
 
@@ -31,12 +35,25 @@ CUDA kernel 优化与 GPU 推理能力建设，面向 AI Infra / 端侧推理方
 - cuBLAS baseline: **0.227ms (9.5 GFLOPS)**
 - 最佳手写 (V5): **0.353ms (6.1 GFLOPS)** — 达到 cuBLAS 的 64%
 
+## 二、量化 GEMM (quant/)
+
+目标：实现 LLM 推理中的 Weight-Only 量化 GEMM，理解量化对 memory-bound 场景的收益。
+
+**实现：**
+- FP16 WMMA baseline（Tensor Core）
+- INT8 dequant + WMMA（per-group scale, 2x 带宽节省）
+- INT4 dequant + WMMA（2值/byte 打包, 4x 带宽节省）
+
+**Benchmark (RTX 2080 Ti, 1024×1024, FP16)：**
+- cuBLAS FP16 baseline: **0.039ms (54.6 GFLOPS)**
+- 关键洞察：1024×1024 矩阵是 compute-bound，量化反而更慢。量化收益在 **memory-bound** 场景（LLM decode, batch=1）。
+
 ## 构建
 
 ```bash
-cd gemm
-make      # 编译
-make bench  # 跑 benchmark
+cd gem    # 或 quant
+make       # 编译
+make bench   # 跑 benchmark
 ```
 
 ## 环境
