@@ -1,5 +1,5 @@
 # Compiled binaries
-gemm
+gemm/gemm
 *.o
 *.obj
 # Editor

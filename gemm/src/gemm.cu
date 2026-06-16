@@ -3,9 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <chrono>
+#include <vector>
+#include <string>
 #include "gemm_naive.cuh"
 #include "gemm_shared.cuh"
+#include "gemm_reg_tile.cuh"
+#include "gemm_vec_load.cuh"
+#include "gemm_dbl_buf.cuh"
+#include "gemm_wmma.cuh"
 
 #define CHECK_CUDA(call) do { \
     cudaError_t err = call; \
@@ -38,64 +43,57 @@ float max_diff(const float* a, const float* b, int size) {
     return maxd;
 }
 
-double benchmark(void (*kernel)(const float*, const float*, float*, int, int, int),
-                 const float* d_A, const float* d_B, float* d_C,
-                 int M, int N, int K, int warmup, int repeats) {
-    for (int i = 0; i < warmup; i++) {
-        kernel(d_A, d_B, d_C, M, N, K);
-    }
+typedef void (*KernelFn)(const float*, const float*, float*, int, int, int);
+
+double benchmark_kernel(KernelFn kernel, const float* d_A, const float* d_B, float* d_C,
+                        int M, int N, int K, int warmup, int repeats) {
+    for (int i = 0; i < warmup; i++) kernel(d_A, d_B, d_C, M, N, K);
     CHECK_CUDA(cudaDeviceSynchronize());
 
     cudaEvent_t start, stop;
     CHECK_CUDA(cudaEventCreate(&start));
     CHECK_CUDA(cudaEventCreate(&stop));
-
     CHECK_CUDA(cudaEventRecord(start));
-    for (int i = 0; i < repeats; i++) {
-        kernel(d_A, d_B, d_C, M, N, K);
-    }
+    for (int i = 0; i < repeats; i++) kernel(d_A, d_B, d_C, M, N, K);
     CHECK_CUDA(cudaEventRecord(stop));
     CHECK_CUDA(cudaEventSynchronize(stop));
 
     float ms = 0;
     CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
-
     CHECK_CUDA(cudaEventDestroy(start));
     CHECK_CUDA(cudaEventDestroy(stop));
-
     return ms / repeats;
 }
 
 double benchmark_cublas(cublasHandle_t handle, const float* d_A, const float* d_B, float* d_C,
                         int M, int N, int K, int warmup, int repeats) {
     float alpha = 1.0f, beta = 0.0f;
-
-    for (int i = 0; i < warmup; i++) {
+    for (int i = 0; i < warmup; i++)
         CHECK_CUBLAS(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K,
                                   &alpha, d_B, N, d_A, K, &beta, d_C, N));
-    }
     CHECK_CUDA(cudaDeviceSynchronize());
 
     cudaEvent_t start, stop;
     CHECK_CUDA(cudaEventCreate(&start));
     CHECK_CUDA(cudaEventCreate(&stop));
-
     CHECK_CUDA(cudaEventRecord(start));
-    for (int i = 0; i < repeats; i++) {
+    for (int i = 0; i < repeats; i++)
         CHECK_CUBLAS(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K,
                                   &alpha, d_B, N, d_A, K, &beta, d_C, N));
-    }
     CHECK_CUDA(cudaEventRecord(stop));
     CHECK_CUDA(cudaEventSynchronize(stop));
 
     float ms = 0;
     CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
-
     CHECK_CUDA(cudaEventDestroy(start));
     CHECK_CUDA(cudaEventDestroy(stop));
-
     return ms / repeats;
 }
+
+struct KernelEntry {
+    std::string name;
+    KernelFn fn;
+};
 
 int main(int argc, char** argv) {
     int M = 1024, N = 1024, K = 1024;
@@ -109,9 +107,9 @@ int main(int argc, char** argv) {
     printf("Matrix: M=%d, N=%d, K=%d\n", M, N, K);
     printf("Warmup: %d, Repeats: %d\n\n", warmup, repeats);
 
-    size_t sizeA = M * K * sizeof(float);
-    size_t sizeB = K * N * sizeof(float);
-    size_t sizeC = M * N * sizeof(float);
+    size_t sizeA = (size_t)M * K * sizeof(float);
+    size_t sizeB = (size_t)K * N * sizeof(float);
+    size_t sizeC = (size_t)M * N * sizeof(float);
 
     float *h_A = (float*)malloc(sizeA);
     float *h_B = (float*)malloc(sizeB);
@@ -127,38 +125,38 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaMalloc(&d_B, sizeB));
     CHECK_CUDA(cudaMalloc(&d_C, sizeC));
     CHECK_CUDA(cudaMalloc(&d_C_ref, sizeC));
-
     CHECK_CUDA(cudaMemcpy(d_A, h_A, sizeA, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_B, h_B, sizeB, cudaMemcpyHostToDevice));
 
     cublasHandle_t handle;
     CHECK_CUBLAS(cublasCreate(&handle));
 
-    // cuBLAS as reference
     double ms_cublas = benchmark_cublas(handle, d_A, d_B, d_C_ref, M, N, K, warmup, repeats);
     CHECK_CUDA(cudaMemcpy(h_C_ref, d_C_ref, sizeC, cudaMemcpyDeviceToHost));
 
     double gflops = 2.0 * M * N * K / 1e9;
 
     printf("%-20s %10s %10s %10s %10s\n", "Kernel", "Time(ms)", "GFLOPS", "vs cuBLAS", "MaxErr");
-    printf("%-20s %10s %10s %10s %10s\n", "-------", "-------", "------", "---------", "------");
+    printf("%-20s %10s %10s %10s %10s\n", "------", "------", "------", "------", "------");
     printf("%-20s %10.3f %10.1f %10s %10s\n", "cuBLAS", ms_cublas, gflops/ms_cublas, "1.00x", "-");
 
-    // Naive
-    run_gemm_naive(d_A, d_B, d_C, M, N, K);
-    CHECK_CUDA(cudaDeviceSynchronize());
-    CHECK_CUDA(cudaMemcpy(h_C_test, d_C, sizeC, cudaMemcpyDeviceToHost));
-    float err = max_diff(h_C_test, h_C_ref, M * N);
-    double ms_naive = benchmark(run_gemm_naive, d_A, d_B, d_C, M, N, K, warmup, repeats);
-    printf("%-20s %10.3f %10.1f %10.2fx %10.4f\n", "naive", ms_naive, gflops/ms_naive, ms_cublas/ms_naive, err);
+    std::vector<KernelEntry> kernels = {
+        {"V1_naive", run_gemm_naive},
+        {"V2_shared_tile", run_gemm_shared},
+        {"V3_reg_tile", run_gemm_reg_tile},
+        {"V4_vec_load", run_gemm_vec_load},
+        {"V5_dbl_buf", run_gemm_dbl_buf},
+        {"V6_wmma_tc", run_gemm_wmma},
+    };
 
-    // Shared memory tiling
-    run_gemm_shared(d_A, d_B, d_C, M, N, K);
-    CHECK_CUDA(cudaDeviceSynchronize());
-    CHECK_CUDA(cudaMemcpy(h_C_test, d_C, sizeC, cudaMemcpyDeviceToHost));
-    err = max_diff(h_C_test, h_C_ref, M * N);
-    double ms_shared = benchmark(run_gemm_shared, d_A, d_B, d_C, M, N, K, warmup, repeats);
-    printf("%-20s %10.3f %10.1f %10.2fx %10.4f\n", "shared_mem_tile", ms_shared, gflops/ms_shared, ms_cublas/ms_shared, err);
+    for (auto& k : kernels) {
+        k.fn(d_A, d_B, d_C, M, N, K);
+        CHECK_CUDA(cudaDeviceSynchronize());
+        CHECK_CUDA(cudaMemcpy(h_C_test, d_C, sizeC, cudaMemcpyDeviceToHost));
+        float err = max_diff(h_C_test, h_C_ref, M * N);
+        double ms = benchmark_kernel(k.fn, d_A, d_B, d_C, M, N, K, warmup, repeats);
+        printf("%-20s %10.3f %10.1f %10.2fx %10.4f\n", k.name.c_str(), ms, gflops/ms, ms_cublas/ms, err);
+    }
 
     printf("\n");
 

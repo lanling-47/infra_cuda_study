@@ -5,10 +5,16 @@ CUDA kernel 优化与 GPU 推理能力建设，面向 AI Infra / 端侧推理方
 ## 项目结构
 
 ```
-├── gem/         # GEM kernel 分阶段优化 (V1-V6)
+├── gemm/         # GEM kernel 分阶段优化 (V1-V6)
 │   ├── src/
-│   ├── notes.md          # 知识点整理
-│  └── README.md
+│   │  ├── gemm.cu            # benchmark 主程序
+│   │   ├── gem_naive.cuh      # V1: 基础实现
+│   │   ├── gemm_shared.cuh    # V2: Shared memory tiling
+│   │   ├── gem_reg_tile.cuh  # V3: 寄存器分块
+│   │   ├── gemm_vec_load.cuh  # V4: float4 向量化加载
+│   │  ├── gemm_dbl_buf.cuh   # V5: 双缓冲
+│   │   └── gemm_wmma.cuh     # V6: Tensor Core WMMA
+│   └── notes.md         # 知识点整理
 └── ...
 ```
 
@@ -34,9 +40,8 @@ CUDA kernel 优化与 GPU 推理能力建设，面向 AI Infra / 端侧推理方
 ## 构建
 
 ```bash
-cd gemm
-make      # 编译
-make bench  # 跑 benchmark
+make       # 编译
+make bench   # 跑 benchmark
 ```
 
 ## 环境
