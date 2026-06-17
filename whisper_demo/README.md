@@ -20,34 +20,56 @@
 
 ## 性能对比结果
 
-### 核心指标
+### 三版本对比
 
-| 指标 | Baseline | 优化版 | 提升 |
-|------|----------|--------|------|
-| **平均延迟** | 105.42 ms | 90.48 ms | **+14.2%** |
-| **最佳延迟** | 37.11 ms | 26.60 ms | **+28.3%** |
-| **吞吐量** | 9.49 trans/sec | 11.05 trans/sec | **+16.5%** |
-| **GPU 显存** | 0.23 GB | 0.23 GB | 无变化 |
+| 指标 | Baseline | PyTorch SDPA | 自定义 CUDA Kernels |
+|------|----------|--------------|---------------------|
+| **平均延迟** | 95.50 ms | 96.29 ms | **95.04 ms** |
+| **最佳延迟** | 32.72 ms | 29.53 ms | **28.60 ms** |
+| **吞吐量** | 10.47 trans/sec | 10.39 trans/sec | **10.52 trans/sec** |
+| **GPU 显存** | 0.23 GB | 0.23 GB | 0.23 GB |
+
+### 性能提升（vs Baseline）
+
+| 优化方案 | 平均延迟 | 最佳延迟 | 吞吐量 |
+|---------|---------|---------|--------|
+| **PyTorch SDPA** | -0.8% | **+9.8%** | -0.8% |
+| **自定义 CUDA Kernels** | **+0.5%** | **+12.6%** | **+0.5%** |
 
 ### 优化技术
-1. ✅ **PyTorch Flash Attention (SDPA)** - 自动激活的 Flash Attention
-2. ✅ **cuDNN benchmark mode** - 自动选择最优卷积算法
-3. ✅ **FP16 推理** - 半精度计算加速
+
+**自定义 CUDA Kernels 方案：**
+1. ✅ **Flash Attention kernel** - 在线 softmax + tiled 计算
+2. ✅ **LayerNorm kernel** - Welford 算法 + warp reduction
+3. ✅ **Softmax kernel** - 数值稳定的在线算法
+4. ✅ **PyTorch C++ Extension** - 编译为 PyTorch 扩展
+5. ✅ **cuDNN benchmark mode** - 自动选择最优算法
+6. ✅ **FP16 推理** - 半精度计算加速
 
 ## 关键发现
 
 ### 1. Flash Attention 的效果
-- **最佳情况**: 延迟降低 28.3% (37.11ms → 26.60ms)
-- **平均情况**: 延迟降低 14.2%
-- **分析**: Flash Attention 在长序列 attention 计算中优势明显，但 Whisper-tiny 的序列长度较短，收益有限
+- **最佳延迟**: 降低 12.6% (32.72ms → 28.60ms)
+- **平均延迟**: 提升 0.5% (95.50ms → 95.04ms)
+- **分析**: Flash Attention 在最优场景下效果显著，但小模型受 GPU 开销限制
 
-### 2. 小模型的局限性
+### 2. 自定义 CUDA Kernels 实现
+- **编译流程**: `.cuh` → PyTorch C++ Extension → `.so` 动态库
+- **关键技术**: 
+  - `c10::cuda::getCurrentCUDAStream()` 获取 PyTorch CUDA 流
+  - `torch::Tensor` 与 CUDA kernel 的数据绑定
+  - `TORCH_CHECK` 输入验证
+- **正确性验证**: 与 PyTorch 参考实现对比，最大误差 < 1e-4
+
+### 3. 小模型的局限性
 - Whisper-tiny 只有 37M 参数，计算量小
 - GPU 开销（kernel launch、内存传输）占比高
 - **预期**: 更大模型（whisper-base/small/medium）会有更显著提升
 
-### 3. 性能波动
-- 优化版标准差更大 (34.68ms vs 28.14ms)
+### 4. 性能波动
+- 自定义 kernels 标准差较大 (30.33ms vs 25.97ms)
+- 可能原因：Flash Attention 在某些 batch 中未完全激活
+- 需要更稳定的 warmup 策略
 - 可能原因：Flash Attention 在某些 batch 中未激活
 - 需要更稳定的 warmup 策略
 
@@ -55,13 +77,21 @@
 
 ```
 whisper_demo/
-├── benchmark_baseline.py       # Baseline GPU 推理测试
-├── benchmark_gpu_optimized.py  # 优化版 GPU 推理测试
-├── compare_results.py          # 性能对比分析
-├── baseline_gpu_results.json   # Baseline 测试结果
-├── optimized_gpu_results.json  # 优化版测试结果
-├── comparison_results.json     # 对比分析报告
-└── README.md                   # 本文件
+├── custom_ops/                    # 自定义 CUDA kernels
+│   ├── kernels.cu                 # Flash Attention, LayerNorm, Softmax CUDA 实现
+│   ├── setup.py                   # PyTorch Extension 构建配置
+│   ├── build.sh                   # 编译脚本
+│   ├── test_ops.py                # 正确性验证和性能测试
+│   └── custom_ops.py              # Python wrapper
+├── benchmark_gpu_baseline.py      # Baseline GPU 推理测试
+├── benchmark_gpu_optimized.py     # PyTorch SDPA 优化版测试
+├── benchmark_custom_kernels.py    # 自定义 CUDA kernels 测试
+├── compare_all_results.py         # 三版本性能对比分析
+├── baseline_gpu_results.json      # Baseline 测试结果
+├── optimized_gpu_results.json     # 优化版测试结果
+├── custom_kernels_results.json    # 自定义 kernels 测试结果
+├── comparison_all_results.json    # 对比分析报告
+└── README.md                      # 本文件
 ```
 
 ## 运行指南
@@ -76,15 +106,33 @@ pip install openai-whisper torch torchaudio numpy
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 ```
 
-### 2. 运行 Baseline
+### 2. 编译自定义 CUDA Kernels
 
 ```bash
-python benchmark_baseline.py
+cd custom_ops
+bash build.sh
+```
+
+**编译流程：**
+1. 检查 CUDA 编译器 (nvcc)
+2. 清理旧构建文件
+3. 使用 `torch.utils.cpp_extension` 编译 CUDA 代码
+4. 安装为 Python 扩展
+
+**验证安装：**
+```bash
+python3 -c "import custom_cuda_ops; print('✓ 安装成功')"
+```
+
+### 3. 运行 Baseline
+
+```bash
+python benchmark_gpu_baseline.py
 ```
 
 输出 `baseline_gpu_results.json`
 
-### 3. 运行优化版
+### 4. 运行 PyTorch SDPA 优化版
 
 ```bash
 python benchmark_gpu_optimized.py
@@ -92,13 +140,22 @@ python benchmark_gpu_optimized.py
 
 输出 `optimized_gpu_results.json`
 
-### 4. 对比分析
+### 5. 运行自定义 CUDA Kernels
 
 ```bash
-python compare_results.py
+export LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/torch/lib:$LD_LIBRARY_PATH
+python benchmark_custom_kernels.py
 ```
 
-输出 `comparison_results.json` 和详细的性能分析报告
+输出 `custom_kernels_results.json`
+
+### 6. 三版本对比分析
+
+```bash
+python compare_all_results.py
+```
+
+输出 `comparison_all_results.json` 和详细的性能分析报告
 
 ## 代码实现细节
 
