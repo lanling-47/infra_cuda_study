@@ -1,0 +1,14 @@
+{
+  "model": "whisper-tiny",
+  "device": "cpu",
+  "total_params": 37184640,
+  "encoder_params": 7632384,
+  "decoder_params": 29552256,
+  "audio_duration": 30,
+  "sample_rate": 16000,
+  "avg_latency_ms": 74.14028644561768,
+  "std_latency_ms": 3.752653008312817,
+  "min_latency_ms": 71.21706008911133,
+  "max_latency_ms": 83.62007141113281,
+  "throughput_per_sec": 13.487943572129382
+}

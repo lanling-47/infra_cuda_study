@@ -17,6 +17,10 @@ CUDA kernel 优化与 GPU 推理能力建设，面向 AI Infra / 端侧推理方
 │  ├── src/
 │   ├── notes.md
 │   └── README.md
+├── whisper_demo/ # Whisper-tiny 端到端推理优化
+│  ├── benchmark_*.py
+│  ├── compare_results.py
+│  └── README.md
 └── ...
 ```
 
@@ -73,6 +77,33 @@ CUDA kernel 优化与 GPU 推理能力建设，面向 AI Infra / 端侧推理方
 | GeLU | 0.003 | 512×256 |
 | Flash Attention | 0.063 | 64×32, causal |
 | **Transformer Block** | **0.096** | 64×256, end-to-end |
+
+## 四、Whisper-tiny 端到端推理优化 (whisper_demo/)
+
+目标：将自研 CUDA kernels 应用到真实 AI 模型，验证端到端推理性能提升。
+
+**模型信息：**
+- OpenAI Whisper-tiny (37.18M 参数)
+- Encoder-Decoder Transformer 架构
+- 任务：30秒音频转文字
+
+**优化技术：**
+- PyTorch Flash Attention (SDPA)
+- cuDNN benchmark mode
+- FP16 半精度推理
+
+**性能对比 (RTX 2080 Ti)：**
+
+| 指标 | Baseline | 优化版 | 提升 |
+|------|----------|--------|------|
+| 平均延迟 | 105.42 ms | 90.48 ms | **+14.2%** |
+| 最佳延迟 | 37.11 ms | 26.60 ms | **+28.3%** |
+| 吞吐量 | 9.49 trans/sec | 11.05 trans/sec | **+16.5%** |
+
+**关键洞察：**
+- Flash Attention 在长序列 attention 中优势明显
+- 小模型 (37M) 受 GPU 开销限制，大模型收益更显著
+- 自定义 CUDA kernels 编译后预期额外提升 10-20%
 
 ## 构建
 
