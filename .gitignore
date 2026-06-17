@@ -10,3 +10,10 @@ gemm/gemm
 # OS
 .DS_Store
 Thumbs.db
+# Cloned repos
+nano-vllm/
+# Build artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+torch_extensions/
